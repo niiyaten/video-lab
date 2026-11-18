@@ -161,6 +161,15 @@ def render_edge_counter_tab(video_path: Path | None, video_info) -> None:
         remove_border = st.checkbox("輪郭後に枠を消す（ROI・画像端）", value=True, key="edge_remove_border")
         border_margin = int(st.number_input("除去幅（px）", min_value=0, max_value=1000, value=1, disabled=not remove_border, key="edge_border_margin"))
 
+    # The operation normally completes very quickly for one image, but large
+    # contours can take longer. These percentages are stages, not time estimates.
+    progress_slot = st.empty()
+    progress_bar = progress_slot.progress(0.0, text="エッジ解析：準備中…")
+
+    def show_progress(step: int, total_steps: int, stage: str) -> None:
+        fraction = min(0.99, step / total_steps) if total_steps else 0.0
+        progress_bar.progress(fraction, text=f"エッジ解析：{stage}（工程ベース {fraction:.0%}）")
+
     try:
         opts = EdgeOptions(alpha=float(alpha), beta=float(beta), blur_mode=blur_mode, blur_kernel=blur_kernel,
                            input_mode=input_mode, threshold=threshold, invert=invert,
@@ -169,8 +178,10 @@ def render_edge_counter_tab(video_path: Path | None, video_info) -> None:
                            min_area=min_area, max_area=max_area, target=target, top_n=top_n,
                            contour_points=points_mode, roi=roi, remove_border=remove_border,
                            border_margin=border_margin, draw_largest_bbox=largest_box)
-        result = analyze_edges(image, opts)
+        result = analyze_edges(image, opts, on_progress=show_progress)
+        progress_bar.progress(1.0, text="エッジ解析：100%（完了）")
     except Exception as exc:
+        progress_slot.empty()
         st.error(f"解析設定を確認してください: {exc}")
         return
 

@@ -11,12 +11,12 @@ from streamlit_image_coordinates import streamlit_image_coordinates
 import streamlit.components.v1 as components
 
 from videolab.edge_ui import render_edge_counter_tab
-from videolab.edge_ui import render_edge_counter_tab
 from videolab.fps import change_playback_fps
 from videolab.segments import seconds_to_interval
 from videolab.optical_flow import FlowOptions, run_sparse_flow
 from videolab.player import MAX_EMBED_BYTES, build_player_html
 from videolab.preview import make_browser_preview
+from videolab.progress_ui import JobProgress
 from videolab.point_selection import (
     make_point_picker_image, map_click_to_frame, read_exact_frame, snap_to_corner,
 )
@@ -111,9 +111,11 @@ with player_tab:
             st.caption("※ 一部フレームだけ変換する場合は動画時間が短くなります。映像はH.264で再圧縮され、画素値やコーデックは変わります。")
             if st.button("互換MP4を作成してプレーヤーで開く", type="primary", key="preview_button"):
                 output = workdir / "browser_preview.mp4"
+                progress = JobProgress("ブラウザ再生用MP4へ変換")
                 try:
-                    with st.spinner("FFmpegで動画を変換中…"):
-                        result = make_browser_preview(source_path, output, max_frames=int(frame_limit))
+                    result = make_browser_preview(source_path, output, max_frames=int(frame_limit),
+                                                  on_progress=progress.update)
+                    progress.finish(f"{result.frame_count:,} フレーム出力")
                     st.session_state.results["browser_preview"] = {
                         "path": str(result.path), "fps": result.playback_fps, "frames": result.frame_count,
                     }
@@ -127,6 +129,7 @@ with player_tab:
                             f"推定{result.frame_count / result.playback_fps:.4f}秒"
                         )
                 except Exception as exc:
+                    progress.fail()
                     st.session_state.results.pop("browser_preview", None)
                     preview_result = None
                     st.error(f"変換失敗: {exc}")
@@ -162,22 +165,6 @@ with image_tab:
 
 with edge_tab:
     render_edge_counter_tab(source_path, video)
-
-
-with edge_tab:
-    render_edge_counter_tab(source_path, video)
-
-
-def make_progress():
-    bar = st.progress(0.0, text="処理を開始します…")
-
-    def update(n: int, total: int) -> None:
-        if total > 0:
-            bar.progress(min(1.0, n / total), text=f"処理中 {n:,} / 約{total:,} フレーム")
-        else:
-            bar.progress(0.0, text=f"処理中 {n:,} フレーム")
-
-    return bar, update
 
 
 if video is None or source_path is None:
@@ -374,14 +361,14 @@ with fps_tab:
         st.caption("画像確認は任意です。後半フレームの読み出しには時間がかかる場合があります。")
         if st.button("選択区間のFPSを変更してMP4を作成", type="primary", key="fps_button"):
             out = workdir / "playback_changed.mp4"
-            bar, on_progress = make_progress()
+            progress = JobProgress("指定区間をMP4として保存")
             try:
-                with st.spinner("選択したフレームを順番に読み取り、H.264へ変換中…"):
-                    count = change_playback_fps(
-                        source_path, out, float(target_fps), on_progress,
-                        start_frame=int(first), end_frame=int(stop),
-                    )
-                bar.empty()
+                count = change_playback_fps(
+                    source_path, out, float(target_fps),
+                    start_frame=int(first), end_frame=int(stop),
+                    on_scan_progress=progress.update,
+                )
+                progress.finish(f"{count:,} フレーム出力")
                 st.session_state.results["fps"] = {
                     "path": str(out), "fps": target_fps, "count": count,
                     "start": first, "stop": stop,
@@ -389,7 +376,7 @@ with fps_tab:
                 st.success(f"完了：元 {first:,}〜{stop-1:,} フレーム / "
                            f"{count:,}フレーム / {target_fps:g} FPS / {count / target_fps:.4f}秒")
             except Exception as exc:
-                bar.empty()
+                progress.fail()
                 st.session_state.results.pop("fps", None)
                 st.error(f"処理失敗: {exc}")
         result = st.session_state.results.get("fps")
@@ -555,7 +542,7 @@ with flow_tab:
     if st.button("解析して動画・CSVを作成", type="primary", disabled=not can_run, key="flow_button"):
         out_mp4 = workdir / "flow_overlay.mp4"
         out_csv = workdir / "flow_tracks.csv"
-        bar, on_progress = make_progress()
+        progress = JobProgress("オプティカルフロー解析")
         try:
             opts = FlowOptions(
                 max_points=max_points, min_distance_px=int(min_distance),
@@ -565,13 +552,12 @@ with flow_tab:
                 initial_points=tuple(st.session_state.flow_points) if manual else None,
                 auto_replenish=bool(auto_replenish), start_frame=start_frame,
             )
-            with st.spinner("元動画を順番にデコードして追跡中…"):
-                count, n_ids = run_sparse_flow(source_path, out_mp4, out_csv, opts, on_progress)
-            bar.empty()
+            count, n_ids = run_sparse_flow(source_path, out_mp4, out_csv, opts, progress.update)
+            progress.finish(f"{count:,} フレーム解析")
             st.session_state.results["flow"] = {"mp4": str(out_mp4), "csv": str(out_csv), "count": count, "ids": n_ids}
             st.success(f"解析完了：{count:,}フレーム / 追跡点ID {n_ids:,}件")
         except Exception as exc:
-            bar.empty()
+            progress.fail()
             st.session_state.results.pop("flow", None)
             st.error(f"処理失敗: {exc}")
     if manual and not can_run:

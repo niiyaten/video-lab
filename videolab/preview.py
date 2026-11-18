@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
 import subprocess
+import tempfile
+from typing import Callable
 
 import imageio_ffmpeg
 
@@ -27,6 +29,7 @@ def make_browser_preview(
     destination: str | Path,
     *,
     max_frames: int = 0,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> PreviewInfo:
     """Transcode to H.264 MP4 retaining source timing as much as possible.
 
@@ -75,6 +78,7 @@ def make_browser_preview(
 
     command = [
         imageio_ffmpeg.get_ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-y",
+        "-nostats", "-stats_period", "0.25", "-progress", "pipe:1",
         "-i", str(src),
         "-map", "0:v:0", "-map", "0:a:0?", "-map_metadata", "0",
         "-vf", video_filters, *fps_args,
@@ -86,10 +90,28 @@ def make_browser_preview(
         command += ["-frames:v", str(max_frames), "-shortest"]
     command += [str(dest)]
     try:
-        result = subprocess.run(command, text=True, capture_output=True, check=False)
-        if result.returncode != 0:
-            detail = result.stderr.strip()[-800:]
-            raise RuntimeError("互換MP4の作成に失敗しました。コーデックを確認してください。\n" + detail)
+        # FFmpeg sends real encoded frame counts to stdout via -progress.
+        # stderr is spooled to disk to avoid pipe deadlocks on long files.
+        expected = (min(max_frames, source_info.frame_count) if max_frames else source_info.frame_count) if source_info else max_frames
+        processed = 0
+        with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as err_file:
+            with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=err_file,
+                                  text=True, encoding="utf-8", errors="replace") as proc:
+                assert proc.stdout is not None
+                for line in proc.stdout:
+                    key, _, value = line.strip().partition("=")
+                    if key == "frame":
+                        try:
+                            processed = max(processed, int(value))
+                        except ValueError:
+                            pass
+                    elif key == "progress" and on_progress is not None:
+                        on_progress(processed, expected)
+                returncode = proc.wait()
+            if returncode != 0:
+                err_file.seek(0)
+                detail = err_file.read()[-800:]
+                raise RuntimeError("互換MP4の作成に失敗しました。コーデックを確認してください。\n" + detail)
         info = read_info(dest)
         if info.frame_count <= 0:
             raise RuntimeError("変換後の動画内にフレームが見つかりませんでした。")
@@ -105,6 +127,8 @@ def make_browser_preview(
                         f"フレーム数が一致しません：元 {expected_frames} → MP4 {info.frame_count}。"
                         " 元動画を変更せず変換を中止しました。"
                     )
+        if on_progress is not None:
+            on_progress(info.frame_count, expected)
         return PreviewInfo(dest, info.fps, info.frame_count)
     except Exception:
         dest.unlink(missing_ok=True)

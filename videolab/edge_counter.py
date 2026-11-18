@@ -9,7 +9,7 @@ All coordinates and areas refer to the original image's pixel coordinate system.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Callable, Literal
 
 import cv2
 import numpy as np
@@ -113,7 +113,11 @@ def _find_contours(mask: np.ndarray) -> list[np.ndarray]:
     return sorted(contours, key=cv2.contourArea, reverse=True)
 
 
-def analyze_edges(image: np.ndarray, options: EdgeOptions | None = None) -> EdgeResult:
+def analyze_edges(
+    image: np.ndarray,
+    options: EdgeOptions | None = None,
+    on_progress: Callable[[int, int, str], None] | None = None,
+) -> EdgeResult:
     """Analyze one frame without mutating input or choosing new points implicitly."""
     o = options or EdgeOptions()
     _validate(o)
@@ -125,6 +129,10 @@ def analyze_edges(image: np.ndarray, options: EdgeOptions | None = None) -> Edge
         bgr = image.copy()
     else:
         raise ValueError("Expected grayscale or BGR image")
+    def report(part: int, detail: str) -> None:
+        if on_progress is not None:
+            on_progress(part, 6, detail)
+
     adjusted = alpha_beta(bgr, o.alpha, o.beta)
     gray = cv2.cvtColor(adjusted, cv2.COLOR_BGR2GRAY)
     if o.blur_mode != "OFF" and o.blur_kernel > 1:
@@ -132,6 +140,7 @@ def analyze_edges(image: np.ndarray, options: EdgeOptions | None = None) -> Edge
             gray = cv2.GaussianBlur(gray, (o.blur_kernel, o.blur_kernel), 0)
         else:
             gray = cv2.medianBlur(gray, o.blur_kernel)
+    report(1, "輝度調整・平滑化")
     if o.input_mode == "Binary":
         method = cv2.THRESH_BINARY_INV if o.invert else cv2.THRESH_BINARY
         _, candidate = cv2.threshold(gray, o.threshold, 255, method)
@@ -146,6 +155,7 @@ def analyze_edges(image: np.ndarray, options: EdgeOptions | None = None) -> Edge
             candidate = cv2.dilate(candidate, k, iterations=o.morph_iterations)
         else:
             candidate = cv2.erode(candidate, k, iterations=o.morph_iterations)
+    report(2, "二値化・エッジ抽出")
     raw_contours = _find_contours(candidate)
     filtered = [c for c in raw_contours if cv2.contourArea(c) >= o.min_area and
                 (o.max_area == 0 or cv2.contourArea(c) <= o.max_area)]
@@ -156,6 +166,7 @@ def analyze_edges(image: np.ndarray, options: EdgeOptions | None = None) -> Edge
     else:
         selected = filtered
 
+    report(3, "輪郭の検出・選択")
     # Draw selected contours to a 1-pixel mask first, then zero ROI and frame edges.
     # This avoids introducing a new artificial ROI boundary prior to contour detection.
     mask = np.zeros(gray.shape, np.uint8)
@@ -172,9 +183,13 @@ def analyze_edges(image: np.ndarray, options: EdgeOptions | None = None) -> Edge
         x0, y0, x1, y1 = o.roi
         cv2.rectangle(overlay, (x0, y0), (x1 - 1, y1 - 1), (255, 200, 0), 1)
 
+    report(4, "輪郭マスク・表示画像")
     contour_rows: list[dict[str, int | float]] = []
     points: list[dict[str, int]] = []
     for idx, contour in enumerate(selected, 1):
+        if on_progress is not None and (idx == 1 or idx % 50 == 0):
+            on_progress(4 * len(selected) + idx, 6 * max(1, len(selected)),
+                        f"輪郭集計 {idx:,} / {len(selected):,} 個")
         x, y, w, h = cv2.boundingRect(contour)
         # Only pixels owned by this contour survive ROI/border removal.
         contour_mask = np.zeros_like(mask)
@@ -201,6 +216,7 @@ def analyze_edges(image: np.ndarray, options: EdgeOptions | None = None) -> Edge
             coordinates = sorted(xy.items())
         points.extend({"contour_id": idx, "x_px": px, "y_px": py} for px, py in coordinates)
 
+    report(6, "解析結果の生成")
     return EdgeResult(
         adjusted=adjusted, contour_input=candidate, contour_mask=mask,
         overlay=overlay, contours=selected, stats=contour_rows, point_rows=points,
