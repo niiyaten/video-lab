@@ -10,6 +10,8 @@ import streamlit as st
 from streamlit_image_coordinates import streamlit_image_coordinates
 import streamlit.components.v1 as components
 
+from videolab.edge_ui import render_edge_counter_tab
+from videolab.edge_ui import render_edge_counter_tab
 from videolab.fps import change_playback_fps
 from videolab.segments import seconds_to_interval
 from videolab.optical_flow import FlowOptions, run_sparse_flow
@@ -28,7 +30,7 @@ def load_selection_frame(path: str, signature: str, index: int):
 
 st.set_page_config(page_title="Video Lab", page_icon="🎞️", layout="wide")
 st.title("Video Lab | 動画計測ツール")
-st.caption("ローカル実行用：動画再生・寸法校正・画像処理・FPS変更・オプティカルフロー解析。")
+st.caption("ローカル実行用：動画再生・寸法校正・画像処理・エッジ解析・FPS変更・オプティカルフロー解析。")
 
 if "workdir" not in st.session_state:
     st.session_state.workdir = str(Path(tempfile.mkdtemp(prefix="videolab_")))
@@ -89,7 +91,7 @@ if source_path is not None:
     else:
         st.info("このファイルのFPS等をOpenCVから取得できません。FFmpeg変換が成功した場合でも撮影FPSは別途確認してください。")
 
-player_tab, image_tab, fps_tab, flow_tab = st.tabs(["その場で再生・コマ送り", "画像計測・画像処理", "再生FPS変更・DL", "オプティカルフロー解析"])
+player_tab, image_tab, edge_tab, fps_tab, flow_tab = st.tabs(["その場で再生・コマ送り", "画像計測・画像処理", "エッジ解析（Edge Counter）", "再生FPS変更・DL", "オプティカルフロー解析"])
 with player_tab:
     st.subheader("その場で再生速度変更・フレーム送り")
     st.write("MP4（H.264）等は直接再生。AVIなどは**元FPSを維持**した互換MP4に変換して表示し、再生速度はプレーヤー内で変更できます。")
@@ -156,6 +158,14 @@ with image_tab:
         height=1130, scrolling=True,
     )
     st.caption("画像計測はブラウザ内で実行します。校正値は画像の撮影倍率・解像度・計測面が同一の場合のみ他画像へ適用できます。")
+
+
+with edge_tab:
+    render_edge_counter_tab(source_path, video)
+
+
+with edge_tab:
+    render_edge_counter_tab(source_path, video)
 
 
 def make_progress():
