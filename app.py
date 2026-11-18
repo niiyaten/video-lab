@@ -280,6 +280,17 @@ with fps_tab:
             step=1.0, format="%.6f", key="fps_export_target",
             help="2000 FPSなどのアプリ独自上限はありません。極端なFPSはH.264/MP4のエンコーダー・再生ソフトで扱えない場合があります。",
         )
+        speed_ratio = target_fps / video.fps
+        if speed_ratio < 1:
+            speed_summary = f"{speed_ratio:.6g} 倍速（再生時間は {1 / speed_ratio:.6g} 倍）"
+        elif speed_ratio > 1:
+            speed_summary = f"{speed_ratio:.6g} 倍速"
+        else:
+            speed_summary = "1 倍速（等速）"
+        st.info(
+            f"元動画に対する再生速度：**{speed_summary}** "
+            f"（元 {video.fps:g} FPS → 出力 {target_fps:g} FPS）"
+        )
         st.caption("記録FPSと出力FPSは独立です。音声は出力しません。元動画自体は変更されません。")
         st.markdown("#### 出力範囲を指定")
         mode = st.radio(
