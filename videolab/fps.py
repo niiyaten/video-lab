@@ -45,13 +45,13 @@ def change_playback_fps(
     try:
         with Mp4Writer(destination, info.width, info.height, target_fps) as writer:
             for original_frame, frame in enumerate(decoded_frames(cap)):
+                if stop is not None and original_frame >= stop:
+                    break
                 # Sequential reads of skipped frames are real work too.
                 if on_scan_progress and ((original_frame + 1) % 15 == 0 or original_frame + 1 == start_frame):
                     on_scan_progress(original_frame + 1, stop or 0)
                 if original_frame < start_frame:
                     continue
-                if stop is not None and original_frame >= stop:
-                    break
                 writer.write(frame)
                 count += 1
                 if on_scan_progress and (count % 15 == 0 or (expected and count == expected)):
