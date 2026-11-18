@@ -1,4 +1,4 @@
-# Video Lab - 動画計測Webアプリ（v6）
+# Video Lab - 動画計測Webアプリ（v7）
 
 動画を**その場でFPS変更・フレーム送り**し、画像計測・画像処理、再生FPS変更MP4の保存とオプティカルフロー解析も行える、ローカル実行向けStreamlitアプリです。
 計測ロジックを `videolab/` に分割しており、後から機能を追加できます。
@@ -253,3 +253,24 @@ VideoLabの **「画像計測・画像処理」タブ** を利用してくださ
 ### 動作確認
 
 `pytest -q` でv6のテスト39件成功（範囲指定・5000 FPS出力を含む）（手動点IDの維持、開始フレーム指定、スナップ、縮小画像からの座標復元、AVI→MP4のフレーム保持など）。GUIについては使用環境のStreamlit画面での操作確認が必要です。
+
+## v7: Edge Counter（エッジ解析）
+
+従来のTkinter版 Edge Counter（2026年7月・v26までの確定要件）をもとにした**再実装**です。
+古いアプリの原本ソースは今回の作業時点で未取得のため、画面構成・処理結果の完全互換を保証するものではありません。
+
+1. 新しい「エッジ解析（Edge Counter）」タブから、静止画（PNG/JPEG/BMP/TIFF/WebP）、ローカルの画像ファイル、または読み込んだ動画の1フレームを選びます。動画フレームは元ファイルからOpenCVで読み取ります。
+2. `α`,`β`で輝度補正し、必要な場合だけガウシアン/メディアンぼかしを掛けます（初期値OFF）。
+3. 輪郭入力を`Binary`（しきい値・反転）または`Canny`（上下しきい値）から選択します。
+4. 任意で`Open / Close / Dilate / Erode`のmorphologyを適用します。
+5. `cv2.findContours`で輪郭抽出し、面積下限・面積上限のフィルタと `All / Max / Top N` で対象輪郭を選択します。
+6. 選ばれた輪郭を1pxのマスクに描画した**後で**、ROI外側とROI・画像端の指定画素をゼロ化します。これにより、ROIの切り抜きに由来する人工的な境界線を作らない処理順としています。
+7. 輪郭重畳PNG、輪郭マスクPNG、輪郭統計CSV、輪郭点列CSV、解析条件JSONを保存します。
+
+初期設定は `blur_mode=OFF`, `contour_points=None`, `draw_largest_bbox=False`、対象輪郭は `All` です。`Open Edge Lines` と重い細線化は旧版で削除されたため、実装していません。点列モードには `None / Edge Pixels / Left Envelope / Right Envelope` を用意しています。
+
+CSVは UTF-8 BOM付きです。輪郭統計の`area_px2`は `cv2.contourArea` による閉曲線の幾何学的面積です。輪郭マスクに残った画素数は `visible_edge_pixels` で表します。画像の左上が原点、Xは右向き、Yは下向きです。
+
+**計測時の注意**：ROIを設定しても輪郭選択・面積は元画像で抽出した輪郭に基づきます（輪郭マスク化後にROIを適用）。Cannyの開いた輪郭などでは `contourArea` がゼロや予想外の値になることがあります。点列出力・輪郭画像は画素単位で、サブピクセル計測ではありません。動画の全フレーム一括解析は未対応です。
+
+コードは `videolab/edge_counter.py`（Streamlit非依存のOpenCV解析エンジン）と `videolab/edge_ui.py`（UI）に分割し、`tests/test_edge_counter.py` で回帰テストしています。
