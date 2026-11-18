@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Video Lab - フレームプレーヤー</title>
+<style>
+:root { font-family: 'Segoe UI', 'Yu Gothic UI', sans-serif; color-scheme: light; color: #1d2835; }
+* { box-sizing: border-box; }
+body { margin: 0; padding: 9px 6px; background: #fff; }
+.panel { max-width: 1160px; margin: auto; }
+.top { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+.pick { padding:8px 10px; display: inline-flex; gap:8px; align-items:center; border:1px solid #bacada; border-radius:8px; cursor:pointer; font-size:14px; background:#f6f9fc; }
+.pick input { width: min(290px, 52vw); font-size:12px; }
+#filename { font-size:12px; color:#536171; word-break:break-all; flex: 1; text-align:right; }
+#video { display:block; width:100%; max-height:450px; aspect-ratio:16 / 9; object-fit:contain; background:#111a24; margin-top:10px; border-radius:8px; }
+.control-box { border:1px solid #e3e8ed; padding:12px 14px; margin-top:10px; border-radius:9px; }
+.line { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:8px 0; }
+.line:first-child { margin-top:0; }
+button { cursor:pointer; border-radius:7px; border:1px solid #cad5df; background:#f4f7fa; padding:9px 12px; font-size:13px; min-height:39px; }
+button:hover { background:#e5edf4; }
+button:disabled { opacity:.35; cursor:not-allowed; }
+#toggle { background:#1168aa; color:white; border-color:#1168aa; min-width:95px; font-weight:600; }
+#timeline { flex:1; min-width:180px; cursor:pointer; }
+#frameNum { width:105px; }
+input[type=number] { max-width:115px; padding:8px; height:38px; border:1px solid #bccbd6; border-radius:7px; font-variant-numeric: tabular-nums; }
+label { display:inline-flex; align-items:center; gap:6px; font-size:13px; }
+.speed-block { margin-left:auto; }
+.value { font-variant-numeric:tabular-nums; font-size:13px; }
+#timeLabel { color:#526372; }
+#status { color:#526372; font-size:12px; }
+.note { color:#546476; font-size:12px; margin:9px 0 2px; line-height:1.7; }
+#empty { color:#5f6b78; font-size:13px; }
+#info { flex:1; }
+@media (max-width:540px) { #video { max-height:290px; } .control-box { padding:9px; } .speed-block{ margin-left:0; } button{ padding:8px; } }
+</style>
+</head>
+<body>
+<div class="panel" id="playerBox" tabindex="0">
+  <div class="top">
+    <label class="pick">動画を開く <input type="file" id="file" accept="video/*,.avi,.mkv,.m4v,.mov,.mp4"></label>
+    <span id="filename">動画を選択してください（ファイルはブラウザ内で読み込みます）</span>
+  </div>
+  <video id="video" playsinline preload="metadata" muted controls></video>
+  <div class="control-box">
+    <div class="line">
+      <button data-step="-10" title="10フレーム前へ">−10</button>
+      <button data-step="-1" title="1フレーム前へ">−1</button>
+      <button id="toggle" title="再生/一時停止">▶ 再生</button>
+      <button data-step="1" title="1フレーム後へ">＋1</button>
+      <button data-step="10" title="10フレーム後へ">＋10</button>
+      <span id="status" aria-live="polite">動画を選択してください</span>
+    </div>
+    <div class="line">
+      <button id="first" title="先頭フレーム">|◀</button>
+      <input type="range" id="timeline" min="0" max="0" value="0" step="1" aria-label="フレーム位置">
+      <button id="last" title="最終フレーム">▶|</button>
+    </div>
+    <div class="line">
+      <label>フレーム <input id="frameNum" type="number" value="0" min="0" max="0" step="1" disabled></label>
+      <span id="info" class="value">/ 0 フレーム</span>
+      <span id="timeLabel" class="value">0.000 s</span>
+    </div>
+    <div class="line">
+      <label>動画ファイルFPS <input type="number" id="sourceFps" value="30" min="0.01" step="any"></label>
+      <label class="speed-block">表示再生FPS <input type="number" id="playFps" value="30" min="0.1" step="any"></label>
+      <button id="sameFps" title="元動画と同じFPSで再生">等速に戻す</button>
+      <span id="speedRatio" class="value">1.00 ×</span>
+    </div>
+    <p class="note">← / → : ±1フレーム　 Shift + ← / → : ±10フレーム　 Space : 再生・停止　 Home / End : 先頭・末尾。<br>
+      <strong>動画ファイルFPS</strong>はコマ送りの時刻計算に使用します。AVIから変換したプレビューでは変換先のFPSを設定してください。自動入力されていない場合は動画の記録FPSを設定してください。再生FPS変更はこの画面内だけで反映され、動画ファイルは変更されません。</p>
+    <div id="empty">※ コマ送りはブラウザのシーク精度に依存します。高FPS動画・長GOP動画では正確に1枚を表示できない場合があります。動画を別の形式に変換してもフレーム番号の厳密な一致を保証するものではありません。</div>
+  </div>
+</div>
+<script>
+'use strict';
+/*__INIT__*/
+(() => {
+  const byId = id => document.getElementById(id);
+  const video = byId('video'), upload = byId('file');
+  const sourceInput = byId('sourceFps'), playInput = byId('playFps');
+  const slider = byId('timeline'), frameNum = byId('frameNum');
+  const toggle = byId('toggle'), status = byId('status');
+  const filename = byId('filename'), info = byId('info'), timeLabel = byId('timeLabel');
+  const ratioLabel = byId('speedRatio');
+  const init = window.VIDEO_LAB_INITIAL || {};
+  let captureFps = (Number(init.captureFps) > 0) ? Number(init.captureFps) : null;
+  let blobURL = null, loaded = false, manual = false, manualStart = 0, manualFrame = 0;
+  let rafId = null, shownFrame = 0, active = false;
+  const clamp = (n,a,b) => Math.min(Math.max(n,a),b);
+  const valid = (el,min) => {
+    const n=Number(el.value);
+    return Number.isFinite(n) && n>=min ? n : null;
+  };
+  const srcFps = () => valid(sourceInput, 0.01) || 30;
+  const playFps = () => valid(playInput, 0.1) || 30;
+  const frameCount = () => loaded && Number.isFinite(video.duration) ? Math.max(1,Math.round(video.duration * srcFps())) : 0;
+  const maxFrame = () => Math.max(0,frameCount()-1);
+  const frameFromTime = () => clamp(Math.round(video.currentTime * srcFps()), 0, maxFrame());
+  function timeText(frame) {
+    const displaySeconds=(frame/srcFps()).toFixed(4);
+    return captureFps ? `${(frame/captureFps).toFixed(4)} s（撮影） / ${displaySeconds} s（再生用）`
+                      : `${displaySeconds} s`;
+  }
+  function showPosition(frame) {
+    if(!loaded) return;
+    shownFrame=clamp(frame,0,maxFrame());
+    slider.max=String(maxFrame());
+    frameNum.max=String(maxFrame());
+    slider.value=String(shownFrame);
+    frameNum.value=String(shownFrame);
+    info.textContent=`/ ${frameCount().toLocaleString('ja-JP')} フレーム（0始まり）`;
+    timeLabel.textContent=timeText(shownFrame);
+  }
+  function updateRatio() {
+    const ratio=playFps()/srcFps();
+    ratioLabel.textContent=`${ratio.toFixed(4)} ×`;
+    return ratio;
+  }
+  function pause() {
+    manual=false;
+    if(rafId!==null){ cancelAnimationFrame(rafId); rafId=null; }
+    video.pause();
+    active=false;
+    toggle.textContent='▶ 再生';
+    status.textContent='一時停止';
+  }
+  function seekTo(frame) {
+    if(!loaded) return;
+    const target=clamp(Math.round(frame),0,maxFrame());
+    showPosition(target);
+    // A small offset avoids boundary rounding toward the previous frame.
+    const t=Math.min(Math.max(0,video.duration-0.000001),(target+0.15)/srcFps());
+    if(Number.isFinite(t)) video.currentTime=t;
+  }
+  function step(amount) {
+    if(!loaded)return;
+    const at=shownFrame;
+    pause();
+    seekTo(at+amount);
+  }
+  function manualTick(now) {
+    if(!manual || !loaded)return;
+    const desired=clamp(manualFrame+Math.floor((now-manualStart)*playFps()/1000),0,maxFrame());
+    if(desired>=maxFrame()){
+      if (!video.seeking) seekTo(maxFrame());
+      pause(); return;
+    }
+    if(!video.seeking && desired!==shownFrame) seekTo(desired);
+    rafId=requestAnimationFrame(manualTick);
+  }
+  function beginManual(){
+    video.pause();
+    manual=true; active=true;
+    manualFrame=shownFrame;
+    manualStart=performance.now();
+    toggle.textContent='⏸ 一時停止';
+    status.textContent='再生中（コマ送り方式）';
+    rafId=requestAnimationFrame(manualTick);
+  }
+  function play() {
+    if(!loaded)return;
+    if(shownFrame>=maxFrame())seekTo(0);
+    const ratio=updateRatio();
+    if(ratio < 0.0625 || ratio > 16){
+      beginManual();
+    }else{
+      manual=false;
+      video.playbackRate=ratio;
+      video.play().then(()=>{
+        active=true;
+        toggle.textContent='⏸ 一時停止';
+        status.textContent='再生中';
+      }).catch(e=>{
+        pause();status.textContent=`再生できません: ${e.message}`;
+      });
+    }
+  }
+  function restartIfPlaying(){
+    const running=active;
+    pause();
+    if(running)play();
+  }
+  function onSourceFps() {
+    if(valid(sourceInput,0.01)===null){status.textContent='元動画FPSは0.01以上に設定';return;}
+    updateRatio();
+    if(loaded){showPosition(frameFromTime());restartIfPlaying();}
+  }
+  function onPlayFps() {
+    if(valid(playInput,0.1)===null){status.textContent='再生FPSは0.1以上に設定';return;}
+    updateRatio();
+    if(loaded)restartIfPlaying();
+  }
+  function loadVideo(url, name){
+    pause();loaded=false;shownFrame=0;
+    video.src=url;video.load();
+    filename.textContent=name;
+    status.textContent='読み込み中…';
+    byId('empty').hidden=false;
+  }
+  upload.addEventListener('change', () => {
+    const file=upload.files?.[0]; if(!file)return;
+    if(blobURL)URL.revokeObjectURL(blobURL);
+    blobURL=URL.createObjectURL(file);
+    captureFps=null; // Directly selected video may be a different recording.
+    loadVideo(blobURL, file.name);
+    // Browser File API does not expose the encoded video's frame rate.
+    sourceInput.value=String(init.fps || 30);
+    playInput.value=sourceInput.value;
+    updateRatio();
+  });
+  video.addEventListener('loadedmetadata', () => {
+    if(!Number.isFinite(video.duration)||video.duration<=0){
+      status.textContent='動画の長さを取得できません';return;
+    }
+    loaded=true;
+    frameNum.disabled=false;
+    showPosition(0);
+    seekTo(0);
+    status.textContent='準備完了';
+  });
+  video.addEventListener('error', () => {
+    status.textContent='再生できません。MP4 (H.264) などブラウザ対応形式に変換してください。';
+  });
+  video.addEventListener('timeupdate', () => {
+    if(loaded && !manual && !video.seeking)showPosition(frameFromTime());
+  });
+  video.addEventListener('seeked', () => {
+    // Use the current browser frame timestamp. The slider can still only be approximate.
+    if(loaded && !manual && video.paused)showPosition(frameFromTime());
+  });
+  video.addEventListener('pause', () => {
+    if(!manual){active=false;toggle.textContent='▶ 再生';}
+  });
+  video.addEventListener('ended', () => pause());
+  video.addEventListener('play', () => {
+    if(!manual){
+      const ratio=updateRatio();
+      if(ratio < 0.0625 || ratio > 16){video.pause();beginManual();}
+      else{video.playbackRate=ratio; active=true;toggle.textContent='⏸ 一時停止';}
+    }
+  });
+  if('requestVideoFrameCallback' in video){
+    const onFrame=(now,meta)=>{
+      if(loaded && !manual && !video.seeking)showPosition(clamp(Math.round(meta.mediaTime*srcFps()),0,maxFrame()));
+      video.requestVideoFrameCallback(onFrame);
+    };
+    video.requestVideoFrameCallback(onFrame);
+  }
+  byId('toggle').addEventListener('click',()=>active ? pause() : play());
+  document.querySelectorAll('[data-step]').forEach(b=>b.addEventListener('click',()=>step(Number(b.dataset.step))));
+  byId('first').addEventListener('click',()=>{pause();seekTo(0);});
+  byId('last').addEventListener('click',()=>{pause();seekTo(maxFrame());});
+  slider.addEventListener('input',()=>{if(loaded)timeLabel.textContent=timeText(+slider.value);});
+  slider.addEventListener('change',()=>{pause();seekTo(+slider.value);});
+  frameNum.addEventListener('change',()=>{pause();seekTo(+frameNum.value);});
+  sourceInput.addEventListener('change',onSourceFps);
+  playInput.addEventListener('change',onPlayFps);
+  byId('sameFps').addEventListener('click',()=>{playInput.value=sourceInput.value;onPlayFps();});
+  window.addEventListener('keydown',e=>{
+    if(!loaded || e.altKey || e.ctrlKey || e.metaKey)return;
+    if(e.target instanceof HTMLElement && e.target.closest('input, textarea, select'))return;
+    const k=e.key;
+    if(k==='ArrowLeft'){e.preventDefault();step(e.shiftKey?-10:-1);}
+    else if(k==='ArrowRight'){e.preventDefault();step(e.shiftKey?10:1);}
+    else if(k===' ' || k==='Spacebar'){e.preventDefault(); active ? pause() : play();}
+    else if(k==='Home'){e.preventDefault();pause();seekTo(0);}
+    else if(k==='End'){e.preventDefault();pause();seekTo(maxFrame());}
+  });
+  if(init.fps && init.fps>0){sourceInput.value=String(init.fps);playInput.value=String(init.fps);}
+  updateRatio();
+  if(init.videoData && init.mime){
+    loadVideo(`data:${init.mime};base64,${init.videoData}`,init.name || 'アップロードした動画');
+  }
+})();
+</script>
+</body>
+</html>

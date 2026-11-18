@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>VideoLab 画像計測・画像処理</title>
+<style>
+:root{font-family:system-ui,-apple-system,"Yu Gothic","Meiryo",sans-serif;color:#e9eff6;background:#121923;line-height:1.5}
+*{box-sizing:border-box}
+body{margin:0;padding:12px;max-width:1400px;margin-inline:auto}
+h1{font-size:19px;margin:4px 0 2px} h2{font-size:15px;margin:0 0 10px}p{margin:5px 0;font-size:12px;color:#c4cedb}
+header{margin-bottom:13px} .layout{display:grid;grid-template-columns:minmax(260px,310px) minmax(380px,1fr);gap:12px;align-items:start}
+.panel{background:#202c3a;border:1px solid #39495b;border-radius:12px;padding:13px;margin-bottom:10px}
+label{display:block;font-size:12px;color:#cbd5e1;margin:8px 0 4px} input,select,button{font:inherit} input[type=file]{width:100%;font-size:12px;color:#c8d5e5}
+input[type=number],select{width:100%;background:#121923;color:#f1f5f9;border:1px solid #556475;border-radius:6px;padding:7px 6px}
+input[type=range]{width:100%;accent-color:#69b6f7}
+.row{display:flex;gap:8px;align-items:center} .row>*{flex:1;min-width:0}
+.btnrow{display:flex;flex-wrap:wrap;gap:5px} button{background:#2c4156;border:1px solid #53718b;border-radius:7px;padding:8px 10px;color:#fff;cursor:pointer;font-size:12px}button:hover{background:#365872}button.active{background:#135a83;border-color:#79c4ff}button:disabled{opacity:.4;cursor:not-allowed}
+.readout{background:#101923;border-radius:7px;padding:9px;font-size:13px;margin:8px 0;color:#d8e8f2;white-space:pre-wrap}
+.toolgroup{border-top:1px solid #39485b;margin-top:13px;padding-top:11px}
+.canvaswrap{background:#0b121b;border:1px solid #425163;border-radius:9px;overflow:auto;max-height:610px;display:flex;align-items:center;justify-content:center;min-height:180px}
+canvas{display:block;max-width:100%;height:auto;cursor:crosshair;object-fit:contain;touch-action:manipulation}
+#empty{color:#9aabbc;text-align:center;font-size:13px;padding:50px 12px}
+.note{font-size:11px;color:#b8c5d3}.muted{color:#9ab0c0} .tiny{font-size:11px} .cols2{display:grid;grid-template-columns:1fr 1fr;gap:8px} .status{font-size:12px;color:#a4d8ff;min-height:20px}
+.scroll{max-height:175px;overflow:auto}table{width:100%;border-collapse:collapse;font-size:11px}td,th{padding:4px 5px;text-align:left;border-bottom:1px solid #324357}
+footer{color:#aec0ce;font-size:11px;margin:12px 0}
+@media(max-width:760px){.layout{display:block}.canvaswrap{max-height:470px}}
+</style>
+</head>
+<body>
+<header><h1>画像計測・簡易画像処理</h1><p>ブラウザ内で画像を処理します。校正対象は定規に限りません。寸法が既知の部品、ゲージ、印字マークなどを2点で指定できます。</p></header>
+<div class="layout">
+<aside>
+ <div class="panel">
+  <h2>① ファイルを選択</h2>
+  <label for="fileA">計測画像 A</label><input id="fileA" type="file" accept="image/*">
+  <label for="fileB">比較画像 B（任意）</label><input id="fileB" type="file" accept="image/*">
+  <label for="fileRef">校正用画像（任意・Aと別の画像）</label><input id="fileRef" type="file" accept="image/*">
+  <p>校正用画像を指定しなければA上で校正できます。別画像で校正する場合、撮影倍率・解像度・対象面などの条件をそろえてください。</p>
+ </div>
+ <div class="panel">
+  <h2>② 基準寸法を校正</h2>
+  <div class="cols2"><div><label for="knownLength">既知の長さ</label><input id="knownLength" type="number" min="0.000001" step="any" value="10"></div>
+  <div><label for="knownUnit">単位</label><select id="knownUnit"><option>mm</option><option>µm</option><option>cm</option><option>m</option><option>inch</option><option value="custom">任意</option></select></div></div>
+  <div id="customUnitWrap" style="display:none"><label for="customUnit">任意単位の表示名</label><input id="customUnit" type="text" value="unit" style="width:100%;padding:7px;background:#121923;color:white;border:1px solid #556475;border-radius:7px"></div>
+  <div class="btnrow" style="margin-top:9px"><button id="modeCal">基準の2点をクリック</button><button id="clearCal">校正を解除</button></div>
+  <div class="readout" id="scaleInfo">未校正（計測結果はpx表示）</div>
+ </div>
+ <div class="panel">
+  <h2>③ 画像処理</h2>
+  <label for="viewMode">表示方法</label><select id="viewMode">
+   <option value="normal">通常（明るさ・コントラスト）</option><option value="gray">グレースケール</option>
+   <option value="binary">二値化</option><option value="contour">輪郭抽出（二値化結果）</option>
+   <option value="overlay">画像重ね合わせ（A+B）</option><option value="difference">差分表示（|A−B|）</option>
+  </select>
+  <label for="alpha">α：コントラスト <output id="alphaOut">1.00</output></label><input id="alpha" type="range" min="0" max="3" step="0.05" value="1">
+  <label for="beta">β：明るさ <output id="betaOut">0</output></label><input id="beta" type="range" min="-255" max="255" step="1" value="0">
+  <div id="thresholdControls" style="display:none">
+   <label for="threshold">二値化しきい値 <output id="thOut">127</output></label><input id="threshold" type="range" min="0" max="255" value="127">
+   <label><input id="invert" type="checkbox"> 白黒反転</label>
+   <label for="minArea">輪郭として表示する最小面積（px²）</label><input id="minArea" type="number" min="1" max="10000000" value="25">
+  </div>
+  <div id="comparisonControls" style="display:none">
+   <label for="mix">Bの透明度 <output id="mixOut">50%</output></label><input id="mix" type="range" min="0" max="100" value="50">
+   <label for="gain">差分強調倍率 <output id="gainOut">3.0</output></label><input id="gain" type="range" min="1" max="10" value="3" step="0.5">
+   <div class="cols2"><div><label for="offsetX">BのX位置補正 (px)</label><input id="offsetX" type="number" value="0" step="1"></div>
+   <div><label for="offsetY">BのY位置補正 (px)</label><input id="offsetY" type="number" value="0" step="1"></div></div>
+   <p>2枚の撮影位置がずれている場合はX/Y補正を使用してください。自動位置合わせは未実装です。</p>
+  </div>
+ </div>
+</aside>
+<main>
+ <div class="panel">
+  <h2>④ 画像上で計測</h2>
+  <div class="btnrow"><button id="modeDistance" class="active">2点間距離</button><button id="modeAngle">3点角度</button><button id="clearMeasurements">計測をクリア</button></div>
+  <div class="readout" id="status">画像Aを読み込んでください。</div>
+  <div class="canvaswrap" id="canvaswrap"><span id="empty">画像を開くとここに表示されます</span><canvas id="canvas" hidden></canvas></div>
+  <div class="row" style="justify-content:space-between;flex-wrap:wrap;margin-top:9px"><span class="tiny muted" id="imageInfo">画像未選択</span><span class="tiny muted" id="pointerInfo">クリックで点を選択</span></div>
+  <div class="btnrow" style="margin-top:9px"><button id="savePNG">表示画像をPNG保存</button><button id="saveCSV">計測値をCSV保存</button><button id="undo">直前の点・計測を戻す</button></div>
+ </div>
+ <div class="panel"><h2>計測結果</h2><div class="scroll"><table><thead><tr><th>#</th><th>種類</th><th>結果</th><th>点の位置(px)</th></tr></thead><tbody id="results"><tr><td colspan="4" class="muted">まだ計測されていません</td></tr></tbody></table></div></div>
+ <div class="panel"><h2>輪郭抽出結果</h2><div class="readout" id="contourInfo">輪郭表示を選択すると領域数と面積を表示します。</div>
+ <p>二値化した白領域の連結成分から境界画素を抽出する簡易処理です。細かな輪郭点列の取得やサブピクセル計測には、今後OpenCV処理を追加できます。</p></div>
+</main>
+</div>
+<footer>計算：表示輝度 = clip(α×入力輝度＋β, 0, 255)。差分はA/Bの対応画素の絶対差です。透過重ね合わせは差の位置を目視確認し、差分は変化の大きさを可視化する目的です。画像・校正条件は外部へ送信しません。測定精度は保証しません。</footer>
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const el = {
+ canvas:$('canvas'), status:$('status'), results:$('results'), scaleInfo:$('scaleInfo'), imageInfo:$('imageInfo'),
+ contourInfo:$('contourInfo'), pointerInfo:$('pointerInfo')
+};
+const ctx = el.canvas.getContext('2d', {willReadFrequently:true});
+const buffer = document.createElement('canvas');const bctx = buffer.getContext('2d',{willReadFrequently:true});
+const state = {a:null,b:null,ref:null,mode:'distance',pending:[],measurements:[],calibration:null,calPoints:[],source:'a',contours:[]};
+const clamp = x => Math.max(0,Math.min(255,Math.round(x)));
+const unitName = () => $('knownUnit').value === 'custom' ? ($('customUnit').value.trim() || 'unit') : $('knownUnit').value;
+const distance = (a,b)=> Math.hypot(a.x-b.x,a.y-b.y);
+const fmt = n => Number.isFinite(n) ? n.toFixed(n<1?4:2) : '---';
+let refreshPending=false;
+function scheduleRender(){if(refreshPending)return;refreshPending=true;requestAnimationFrame(()=>{refreshPending=false;render();});}
+function setStatus(s){el.status.textContent=s;}
+function sourceImage(){return state.source==='ref'?state.ref:state.a;}
+function selectMode(m){state.mode=m;state.pending=[];state.source=m==='cal'&&state.ref?'ref':'a';
+ for(const [button,mode] of [['modeCal','cal'],['modeDistance','distance'],['modeAngle','angle']]) $(button).classList.toggle('active',mode===m);
+ setStatus(m==='cal'?'既知の長さの両端を順に2点クリックしてください。':m==='distance'?'計測する2点を順にクリックしてください。':'角度を測る3点をクリック（1点目→頂点→3点目）。');render();}
+function resetScale(){state.calibration=null;state.calPoints=[];state.measurements=[];state.pending=[];updateScale();updateMeasurements();}
+function updateScale(){const c=state.calibration;el.scaleInfo.textContent=c?`${fmt(c.unitsPerPx)} ${c.unit}/px\n基準: ${fmt(c.value)} ${c.unit} / ${fmt(c.px)} px`:'未校正（計測結果はpx表示）';}
+function updateMeasurements(){el.results.replaceChildren();if(!state.measurements.length){const tr=document.createElement('tr');tr.innerHTML='<td colspan="4" class="muted">まだ計測されていません</td>';el.results.appendChild(tr);return;}
+ state.measurements.forEach((m,i)=>{const tr=document.createElement('tr');const pts=m.points.map(p=>`(${p.x.toFixed(1)}, ${p.y.toFixed(1)})`).join(' ');
+ [String(i+1),m.type==='distance'?'距離':'角度',m.type==='distance'? `${fmt(distance(m.points[0],m.points[1])*(state.calibration?.unitsPerPx ?? 1))} ${state.calibration?.unit??'px'}`:`${fmt(m.angle)} °`,pts].forEach(v=>{const td=document.createElement('td');td.textContent=v;tr.appendChild(td);});el.results.appendChild(tr);});}
+async function loadImage(input,field){const file=input.files?.[0];if(!file)return;const url=URL.createObjectURL(file);try{const img=new Image();await new Promise((resolve,reject)=>{img.onload=resolve;img.onerror=reject;img.src=url;});state[field]=img;
+ if(field==='a'){resetScale();state.source='a';selectMode('distance');}
+ if(field==='ref'){resetScale();if(state.mode==='cal')state.source='ref';}
+ if(field==='b'){$('offsetX').value='0';$('offsetY').value='0';}
+ render();}catch(e){setStatus('画像を読み込めませんでした: '+e.message);}finally{URL.revokeObjectURL(url);}}
+$('fileA').addEventListener('change',e=>loadImage(e.target,'a'));
+$('fileB').addEventListener('change',e=>loadImage(e.target,'b'));
+$('fileRef').addEventListener('change',e=>loadImage(e.target,'ref'));
+$('modeCal').onclick=()=>selectMode('cal');$('modeDistance').onclick=()=>selectMode('distance');$('modeAngle').onclick=()=>selectMode('angle');
+$('clearCal').onclick=()=>{state.calibration=null;state.calPoints=[];updateScale();updateMeasurements();render();};
+$('clearMeasurements').onclick=()=>{state.measurements=[];state.pending=[];updateMeasurements();render();};
+$('undo').onclick=()=>{if(state.pending.length)state.pending.pop();else if(state.mode==='cal'){state.calibration=null;state.calPoints=[];updateScale();}else state.measurements.pop();updateMeasurements();render();};
+$('knownUnit').onchange=()=>{$('customUnitWrap').style.display=$('knownUnit').value==='custom'?'block':'none';};
+function showControls(){const v=$('viewMode').value;
+ $('thresholdControls').style.display=(v==='binary'||v==='contour')?'block':'none';
+ $('comparisonControls').style.display=(v==='overlay'||v==='difference')?'block':'none';
+}
+for(const id of ['viewMode','alpha','beta','threshold','invert','minArea','mix','gain','offsetX','offsetY']){
+ $(id).addEventListener('input',()=>{$('alphaOut').textContent=Number($('alpha').value).toFixed(2);$('betaOut').textContent=$('beta').value;
+ $('thOut').textContent=$('threshold').value;$('mixOut').textContent=$('mix').value+'%';$('gainOut').textContent=Number($('gain').value).toFixed(1);
+ showControls();if((['overlay','difference'].includes($('viewMode').value))&&!state.b){setStatus('画像重ね合わせ・差分表示には比較画像Bも必要です。');}scheduleRender();});}
+showControls();
+function processImageData(input,w,h){const a=Number($('alpha').value),b=Number($('beta').value);const mode=$('viewMode').value;
+ const dat=input.data;for(let i=0;i<dat.length;i+=4){let r=clamp(a*dat[i]+b),g=clamp(a*dat[i+1]+b),bl=clamp(a*dat[i+2]+b);
+ if(mode==='gray'||mode==='binary'||mode==='contour'){const y=clamp(.299*r+.587*g+.114*bl);r=g=bl=y;}
+ if(mode==='binary'){const white=($('invert').checked? r<=Number($('threshold').value):r>Number($('threshold').value))?255:0;r=g=bl=white;}
+ dat[i]=r;dat[i+1]=g;dat[i+2]=bl;}
+ if(mode==='contour'){const binary=new Uint8Array(w*h);const t=Number($('threshold').value),inv=$('invert').checked;
+ for(let i=0;i<w*h;i++){const bright=dat[i*4];binary[i]=(inv?bright<=t:bright>t)?1:0;}
+ return renderContour(input,binary,w,h);
+ }
+ return input;}
+function renderContour(data,binary,w,h){const checked=new Uint8Array(w*h),queue=new Int32Array(w*h);const minArea=Math.max(1,Number($('minArea').value)||1);let found=0,pixels=0,largest=0;
+ // 8-connected components; draw the perimeter pixels in red for regions above the area cutoff.
+ for(let j=0;j<h;j++){for(let k=0;k<w;k++){const start=j*w+k;if(!binary[start]||checked[start])continue;
+ let head=0,tail=1;queue[0]=start;checked[start]=1;
+ while(head<tail){const v=queue[head++],x=v%w,y=(v-x)/w;
+ for(let dy=-1;dy<=1;dy++){const yy=y+dy;if(yy<0||yy>=h)continue;for(let dx=-1;dx<=1;dx++){
+ if(!dx&&!dy)continue;const xx=x+dx;if(xx<0||xx>=w)continue;const ni=yy*w+xx;if(binary[ni]&&!checked[ni]){checked[ni]=1;queue[tail++]=ni;}}}}
+ if(tail<minArea)continue;found++;pixels+=tail;largest=Math.max(largest,tail);
+ for(let l=0;l<tail;l++){const v=queue[l],x=v%w,y=(v-x)/w;const boundary=x===0||y===0||x===w-1||y===h-1||!binary[v-1]||!binary[v+1]||!binary[v-w]||!binary[v+w];
+ if(boundary){const p=4*v;data.data[p]=255;data.data[p+1]=48;data.data[p+2]=48;}}
+ }}
+ el.contourInfo.textContent=`検出領域: ${found}個 / 白領域の合計: ${pixels} px² / 最大領域: ${largest} px²`;
+ return data;}
+function drawAnnotations(){const scale=state.calibration?.unitsPerPx??1;const unit=state.calibration?.unit??'px';const isRef=state.source==='ref';
+ ctx.lineWidth=Math.max(1.3,el.canvas.width/1300);ctx.font=`${Math.max(12,el.canvas.width/85)}px system-ui`;
+ function mark(p,color){ctx.strokeStyle=color;ctx.beginPath();ctx.moveTo(p.x-6,p.y);ctx.lineTo(p.x+6,p.y);ctx.moveTo(p.x,p.y-6);ctx.lineTo(p.x,p.y+6);ctx.stroke();}
+ function seg(points,color){ctx.strokeStyle=color;ctx.beginPath();ctx.moveTo(points[0].x,points[0].y);for(const p of points.slice(1))ctx.lineTo(p.x,p.y);ctx.stroke();for(const p of points)mark(p,color);}
+ function label(pt,txt){ctx.fillStyle='rgba(10,19,27,.88)';const width=ctx.measureText(txt).width+12;const x=Math.min(Math.max(4,pt.x+9),Math.max(4,el.canvas.width-width-4)),y=Math.min(Math.max(20,pt.y-12),el.canvas.height-8);ctx.fillRect(x,y-17,width,23);ctx.fillStyle='#fbeb91';ctx.fillText(txt,x+6,y);}
+ if(isRef||!state.ref){if(state.calPoints.length===2){seg(state.calPoints,'#22e7b4');label(state.calPoints[1],`${fmt(state.calibration?.value??0)} ${state.calibration?.unit??''}`);}}
+ if(!isRef){state.measurements.forEach(m=>{seg(m.points,'#ffd45b');if(m.type==='distance')label(m.points[1],`${fmt(distance(m.points[0],m.points[1])*scale)} ${unit}`);else label(m.points[1],`${fmt(m.angle)}°`);});}
+ for(const p of state.pending)mark(p,'#82d9ff');}
+function render(){const source=sourceImage();if(!source){el.canvas.hidden=true;$('empty').hidden=false;el.imageInfo.textContent='画像未選択';return;}
+ $('empty').hidden=true;el.canvas.hidden=false;
+ if(el.canvas.width!==source.naturalWidth||el.canvas.height!==source.naturalHeight){el.canvas.width=source.naturalWidth;el.canvas.height=source.naturalHeight;}
+ const w=source.naturalWidth,h=source.naturalHeight;buffer.width=w;buffer.height=h;bctx.clearRect(0,0,w,h);bctx.drawImage(source,0,0);const v=$('viewMode').value;
+ const data=bctx.getImageData(0,0,w,h);
+ const processed=processImageData(data,w,h);
+ ctx.putImageData(processed,0,0);
+ if(state.source==='a'&&(v==='overlay'||v==='difference')){
+  const b=state.b,offsetX=Number($('offsetX').value)||0,offsetY=Number($('offsetY').value)||0;
+  if(b){if(v==='overlay'){ctx.save();ctx.globalAlpha=Number($('mix').value)/100;ctx.drawImage(b,offsetX,offsetY);ctx.restore();}
+   else{const bcan=document.createElement('canvas');bcan.width=w;bcan.height=h;const bc=bcan.getContext('2d',{willReadFrequently:true});bc.drawImage(b,offsetX,offsetY);const bd=bc.getImageData(0,0,w,h).data;const out=ctx.getImageData(0,0,w,h);const a=out.data;const gain=Number($('gain').value);
+   // Pixels outside the B image are transparent. They remain black to avoid false detections.
+   for(let p=0;p<a.length;p+=4){if(bd[p+3]===0){a[p]=a[p+1]=a[p+2]=0;continue;}
+     const v=clamp(((Math.abs(a[p]-bd[p])+Math.abs(a[p+1]-bd[p+1])+Math.abs(a[p+2]-bd[p+2]))/3)*gain);
+     a[p]=v;a[p+1]=clamp(v*.55);a[p+2]=clamp(v*.12);a[p+3]=255;}
+   ctx.putImageData(out,0,0);}}
+ }
+ drawAnnotations();
+ el.imageInfo.textContent=`${state.source==='ref'?'校正用画像':'画像A'}: ${w} × ${h} px`+(state.b&&state.source==='a'?` / 比較画像B: ${state.b.naturalWidth} × ${state.b.naturalHeight} px`:'');
+}
+function angleDeg(a,b,c){const u=[a.x-b.x,a.y-b.y],v=[c.x-b.x,c.y-b.y],dot=u[0]*v[0]+u[1]*v[1];return Math.acos(Math.max(-1,Math.min(1,dot/(Math.hypot(...u)*Math.hypot(...v)))))*180/Math.PI;}
+el.canvas.addEventListener('pointermove',e=>{if(el.canvas.hidden)return;const r=el.canvas.getBoundingClientRect();const x=(e.clientX-r.left)*el.canvas.width/r.width;const y=(e.clientY-r.top)*el.canvas.height/r.height;el.pointerInfo.textContent=`x=${x.toFixed(1)}, y=${y.toFixed(1)} px`;});
+el.canvas.addEventListener('click',e=>{if(el.canvas.hidden)return;const r=el.canvas.getBoundingClientRect();const p={x:Math.max(0,Math.min(el.canvas.width-1,(e.clientX-r.left)*el.canvas.width/r.width)),y:Math.max(0,Math.min(el.canvas.height-1,(e.clientY-r.top)*el.canvas.height/r.height))};
+ state.pending.push(p);const count=state.mode==='angle'?3:2;
+ if(state.pending.length===count){const pts=state.pending.splice(0);
+ if(state.mode==='cal'){const d=distance(pts[0],pts[1]),len=Number($('knownLength').value);if(!Number.isFinite(len)||len<=0||d<0.001){setStatus('校正失敗: 既知の長さは正の数、クリック点は異なる位置を指定してください。');render();return;}
+ const unit=unitName();state.calibration={value:len,unit,px:d,unitsPerPx:len/d};state.calPoints=pts;updateScale();updateMeasurements();setStatus(`校正完了: ${fmt(len/d)} ${unit}/px。距離計測へ切り替えてください。`);}
+ else if(state.mode==='distance'){if(distance(...pts)<.001){setStatus('異なる2点を選択してください。');render();return;}state.measurements.push({type:'distance',points:pts});updateMeasurements();setStatus('距離を計測しました。続けて別の2点をクリックできます。');}
+ else{const angle=angleDeg(...pts);if(!Number.isFinite(angle)){setStatus('角度計測失敗: 重複した点を避けてください。');render();return;}state.measurements.push({type:'angle',angle,points:pts});updateMeasurements();setStatus('角度を計測しました。頂点は2点目です。');}}
+ render();});
+function saveBlob(blob,name){const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),5000);}
+$('savePNG').onclick=()=>{if(!sourceImage()){setStatus('画像を先に選択してください。');return;}el.canvas.toBlob(b=>{if(b)saveBlob(b,'videolab_processed.png');},'image/png');};
+$('saveCSV').onclick=()=>{const unit=state.calibration?.unit??'px',scale=state.calibration?.unitsPerPx??1;
+ const rows=[['index','type','value','unit','x1_px','y1_px','x2_px','y2_px','x3_px','y3_px']];state.measurements.forEach((m,i)=>{
+ const value=m.type==='distance'?distance(m.points[0],m.points[1])*scale:m.angle;rows.push([i+1,m.type,value,m.type==='distance'?unit:'deg',...m.points.flatMap(p=>[p.x,p.y]),...(m.type==='distance'?['','']:[])]);});
+ const csv='\ufeff'+rows.map(r=>r.join(',')).join('\r\n');saveBlob(new Blob([csv],{type:'text/csv;charset=utf-8'}),'videolab_measurements.csv');};
+</script>
+</body>
+</html>
