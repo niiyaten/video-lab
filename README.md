@@ -1,4 +1,4 @@
-# Video Lab - 動画計測Webアプリ（v11）
+# Video Lab - 動画計測Webアプリ（v12）
 
 ## v12：MP4変換の画質（CRF）設定
 
