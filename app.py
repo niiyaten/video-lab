@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import shutil
 import tempfile
 import uuid
@@ -13,7 +14,7 @@ from streamlit_image_coordinates import streamlit_image_coordinates
 import streamlit.components.v1 as components
 
 from videolab.edge_ui import render_edge_counter_tab
-from videolab.fps_fast import export_fps_optimized
+from videolab.fps_seek import export_fps_with_seek
 from videolab.segments import seconds_to_interval
 from videolab.optical_flow import FlowOptions, run_sparse_flow
 from videolab.player import MAX_EMBED_BYTES, build_player_html
@@ -289,7 +290,12 @@ with fps_tab:
         preset = {"高速（ultrafast・ファイル容量大）": "ultrafast",
                   "標準（veryfast）": "veryfast",
                   "容量優先（medium・時間長）": "medium"}[preset_label]
-        st.caption("H.264で動画全体を変更する場合は、再圧縮なしを自動試行します。部分切り出しや非対応コーデックはFFmpegで再エンコードします。")
+        st.caption(
+            "H.264の全区間変更では再圧縮なしを試行します。"
+            "途中の区間はffprobeのフレーム時刻索引を使用し、"
+            "キーフレームから高速シークして先頭・末尾フレームを検証します。"
+            "ffprobeが見つからない／検証不一致の場合は先頭からの正確な読込に戻します。"
+        )
         st.markdown("#### 出力範囲を指定")
         mode = st.radio(
             "指定単位", ["フレーム番号", "動画の秒数"], horizontal=True,
@@ -376,7 +382,7 @@ with fps_tab:
             progress = JobProgress("指定区間をMP4として保存")
             progress.update(0, selected, stage="動画情報を取得・変換を準備中")
             try:
-                exported = export_fps_optimized(
+                exported = export_fps_with_seek(
                     source_path, out, float(target_fps),
                     on_progress=progress.update,
                     on_stage=lambda stage: progress.update(
@@ -391,7 +397,11 @@ with fps_tab:
                     "path": str(out), "fps": exported.fps, "count": count,
                     "start": first, "stop": stop, "method": exported.method,
                 }
-                method_label = "再圧縮なし" if exported.method == "stream_copy" else "FFmpeg再エンコード"
+                method_label = {
+                    "stream_copy": "再圧縮なし",
+                    "seek_transcode": "高速シーク＋境界検証済み",
+                    "transcode": "先頭からのFFmpeg再エンコード",
+                }.get(exported.method, exported.method)
                 st.success(f"完了（{method_label}）：元 {first:,}〜{stop-1:,} フレーム / "
                            f"{count:,}フレーム / {target_fps:g} FPS / {count / target_fps:.4f}秒")
             except Exception as exc:
@@ -402,7 +412,11 @@ with fps_tab:
         if result and Path(result["path"]).is_file():
             output_path = Path(result["path"])
             size_bytes = output_path.stat().st_size
-            method_label = "再圧縮なし" if result.get("method") == "stream_copy" else "再エンコード"
+            method_label = {
+                "stream_copy": "再圧縮なし",
+                "seek_transcode": "高速シーク＋境界検証済み",
+                "transcode": "先頭から再エンコード",
+            }.get(result.get("method"), "再エンコード")
             st.write(f"作成済み動画：**元 {result['start']:,}〜{result['stop'] - 1:,}フレーム / "
                      f"{result['fps']:g} FPS**（{method_label}、{size_bytes / 1024**2:.1f} MiB）")
             if size_bytes <= MAX_EMBED_BYTES:
@@ -427,13 +441,27 @@ with fps_tab:
                 elif save_path.exists():
                     st.error("同名ファイルがあります。上書きせず、別のファイル名を指定してください。")
                 else:
+                    save_progress = JobProgress("ファイル保存", unit="MiB")
+                    total_mib = max(1, math.ceil(size_bytes / (1024 * 1024)))
                     try:
-                        shutil.copy2(output_path, save_path)
+                        copied = 0
+                        # Exclusive-create prevents accidental overwrite, even
+                        # when another process creates the file after the check.
+                        with output_path.open("rb") as src, save_path.open("xb") as dst:
+                            while chunk := src.read(4 * 1024 * 1024):
+                                dst.write(chunk)
+                                copied += len(chunk)
+                                save_progress.update(
+                                    math.ceil(copied / (1024 * 1024)), total_mib,
+                                    stage="指定フォルダへファイル保存中",
+                                )
+                        shutil.copystat(output_path, save_path)
                         if save_path.stat().st_size != size_bytes:
-                            save_path.unlink(missing_ok=True)
                             raise OSError("コピー後のファイルサイズが一致しません。")
+                        save_progress.finish(f"{size_bytes / (1024**2):.1f} MiB保存")
                         st.success(f"保存しました: {save_path}")
                     except OSError as exc:
+                        save_progress.fail()
                         # Remove a partially copied file if the disk fills up.
                         save_path.unlink(missing_ok=True)
                         st.error(f"PCへの保存に失敗しました: {exc}")
