@@ -23,6 +23,7 @@ from typing import Callable
 
 import imageio_ffmpeg
 
+from .encoding import DEFAULT_CRF, validate_crf
 from .fps_fast import FPSExportResult, _verify, export_fps_optimized
 from .segments import validate_frame_interval
 from .video_io import read_info
@@ -195,7 +196,7 @@ def _run_verified_seek(
 
 def _export_using_index(
     source: Path, destination: Path,
-    target_fps: float, start: int, stop: int, preset: str,
+    target_fps: float, start: int, stop: int, preset: str, crf: int,
     index: PacketIndex,
     on_progress: Progress | None, on_stage: Stage | None,
 ) -> FPSExportResult:
@@ -232,7 +233,7 @@ def _export_using_index(
         "-filter_complex", graph, "-map", "[out]", "-an",
         "-r", output_rate, "-fps_mode:v", "cfr",
         "-enc_time_base:v", time_base,
-        "-c:v", "libx264", "-preset", preset, "-crf", "23",
+        "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
         "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(destination),
     ]
     if on_stage:
@@ -263,9 +264,11 @@ def export_fps_with_seek(
     start_frame: int = 0,
     end_frame: int | None = None,
     preset: str = "veryfast",
+    crf: int = DEFAULT_CRF,
     on_stage: Stage | None = None,
 ) -> FPSExportResult:
     """Prefer verified keyframe seek for partial ranges; otherwise fall back."""
+    crf = validate_crf(crf)
     src, dst = Path(source), Path(destination)
     if src.resolve() == dst.resolve():
         raise ValueError("元動画と出力先に同じファイルを指定できません")
@@ -294,7 +297,7 @@ def export_fps_with_seek(
                 on_progress(0, interval.count)
             return _export_using_index(
                 src, dst, target_fps, interval.start, interval.stop, preset,
-                index, on_progress, on_stage,
+                crf, index, on_progress, on_stage,
             )
         except (FastSeekUnavailable, RuntimeError, ValueError, OSError, subprocess.SubprocessError) as exc:
             # Never deliver a file with an unverified range.
@@ -306,5 +309,5 @@ def export_fps_with_seek(
     return export_fps_optimized(
         src, dst, target_fps, on_progress,
         start_frame=interval.start, end_frame=interval.stop,
-        preset=preset, on_stage=on_stage,
+        preset=preset, crf=crf, on_stage=on_stage,
     )

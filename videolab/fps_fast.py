@@ -19,6 +19,7 @@ from typing import Callable
 import cv2
 import imageio_ffmpeg
 
+from .encoding import DEFAULT_CRF, validate_crf
 from .segments import validate_frame_interval
 from .video_io import read_info
 
@@ -128,6 +129,7 @@ def export_fps_optimized(
     start_frame: int = 0,
     end_frame: int | None = None,
     preset: str = 'veryfast',
+    crf: int = DEFAULT_CRF,
     on_stage: Callable[[str], None] | None = None,
 ) -> FPSExportResult:
     """Write exactly [start_frame,end_frame) with new CFR playback timestamps.
@@ -141,6 +143,7 @@ def export_fps_optimized(
         raise ValueError('出力FPSは正の有限値にしてください。')
     if preset not in {'ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium'}:
         raise ValueError('不正なエンコード速度設定です。')
+    crf = validate_crf(crf)
     src, dst = Path(source), Path(destination)
     if src.resolve() == dst.resolve():
         raise ValueError('元動画と出力先は別のファイルを指定してください。')
@@ -186,7 +189,7 @@ def export_fps_optimized(
           'pad=ceil(iw/2)*2:ceil(ih/2)*2')
     command = [*base, '-vf', vf, '-r', output_rate, '-fps_mode:v', 'cfr',
                '-enc_time_base:v', time_base,
-               '-c:v', 'libx264', '-preset', preset, '-crf', '23',
+               '-c:v', 'libx264', '-preset', preset, '-crf', str(crf),
                '-pix_fmt', 'yuv420p', '-movflags', '+faststart', str(dst)]
     try:
         if interval.start:

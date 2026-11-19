@@ -112,16 +112,28 @@ with player_tab:
                 min_value=0, max_value=2000000, value=0, step=100,
                 help="例えば600を指定した場合、元動画の先頭600フレームだけを取り出します。FPSは変えません。",
             )
-            st.caption("※ 一部フレームだけ変換する場合は動画時間が短くなります。映像はH.264で再圧縮され、画素値やコーデックは変わります。")
+            preview_crf = st.slider(
+                "MP4画質（CRF：小さいほど高画質・大容量）",
+                min_value=0, max_value=51, value=23, step=1,
+                key="preview_crf",
+                help="18：高画質、23：標準、28：容量優先。"
+                     "0でもyuv420pへの色形式変換などがあれば元AVIと画素値は一致しません。",
+            )
+            st.caption("※ AVI→MP4はH.264で再エンコードします。"
+                       "CRFは画質とファイル容量に影響しますが、計測には元動画を使用してください。"
+                       "一部フレームだけ変換する場合は動画時間が短くなります。")
             if st.button("互換MP4を作成してプレーヤーで開く", type="primary", key="preview_button"):
                 output = workdir / "browser_preview.mp4"
                 progress = JobProgress("ブラウザ再生用MP4へ変換")
                 try:
-                    result = make_browser_preview(source_path, output, max_frames=int(frame_limit),
-                                                  on_progress=progress.update)
+                    result = make_browser_preview(
+                        source_path, output, max_frames=int(frame_limit),
+                        crf=int(preview_crf), on_progress=progress.update,
+                    )
                     progress.finish(f"{result.frame_count:,} フレーム出力")
                     st.session_state.results["browser_preview"] = {
-                        "path": str(result.path), "fps": result.playback_fps, "frames": result.frame_count,
+                        "path": str(result.path), "fps": result.playback_fps,
+                        "frames": result.frame_count, "crf": int(preview_crf),
                     }
                     preview_result = st.session_state.results["browser_preview"]
                     st.success(f"変換成功：{result.frame_count:,}フレーム / {result.playback_fps:g} FPS。元動画を保持しています。")
@@ -138,7 +150,11 @@ with player_tab:
                     preview_result = None
                     st.error(f"変換失敗: {exc}")
             if preview_result and Path(preview_result["path"]).is_file():
-                st.caption(f"準備済み：{preview_result['frames']:,} フレーム、{preview_result['fps']:g} FPS")
+                st.caption(
+                    f"準備済み：{preview_result['frames']:,} フレーム、"
+                    f"{preview_result['fps']:g} FPS、"
+                    f"CRF {preview_result.get('crf', 23)}"
+                )
                 st.download_button(
                     "プレビューMP4を保存", data=Path(preview_result["path"]).read_bytes(),
                     file_name="browser_preview.mp4", mime="video/mp4",
@@ -313,11 +329,21 @@ with fps_tab:
             f"（元 {video.fps:g} FPS → 出力 {target_fps:g} FPS）"
         )
         st.caption("記録FPSと出力FPSは独立です。音声は出力しません。元動画自体は変更されません。")
-        preset_label = st.selectbox(
-            "再圧縮が必要な場合のエンコード速度",
-            ["高速（ultrafast・ファイル容量大）", "標準（veryfast）", "容量優先（medium・時間長）"],
-            index=1, key="fps_export_preset",
-        )
+        preset_col, quality_col = st.columns(2)
+        with preset_col:
+            preset_label = st.selectbox(
+                "再圧縮が必要な場合のエンコード速度",
+                ["高速（ultrafast・ファイル容量大）", "標準（veryfast）", "容量優先（medium・時間長）"],
+                index=1, key="fps_export_preset",
+            )
+        with quality_col:
+            export_crf = st.slider(
+                "MP4画質（CRF：小さいほど高画質・大容量）",
+                min_value=0, max_value=51, value=23, step=1,
+                key="fps_export_crf",
+                help="18：高画質、23：標準、28：容量優先。"
+                     "H.264動画全体の再圧縮なし書き出しでは適用されません。",
+            )
         preset = {"高速（ultrafast・ファイル容量大）": "ultrafast",
                   "標準（veryfast）": "veryfast",
                   "容量優先（medium・時間長）": "medium"}[preset_label]
@@ -326,6 +352,7 @@ with fps_tab:
             "途中の区間はffprobeのフレーム時刻索引を使用し、"
             "キーフレームから高速シークして先頭・末尾フレームを検証します。"
             "ffprobeが見つからない／検証不一致の場合は先頭からの正確な読込に戻します。"
+            " CRFは再エンコード時だけ有効です（再圧縮なしでは元の画質を維持）。"
         )
         st.markdown("#### 出力範囲を指定")
         mode = st.radio(
@@ -420,21 +447,24 @@ with fps_tab:
                         progress.processed, selected, stage=stage
                     ),
                     start_frame=int(first), end_frame=int(stop),
-                    preset=preset,
+                    preset=preset, crf=int(export_crf),
                 )
                 count = exported.frame_count
                 progress.finish(f"{count:,} フレーム出力")
                 st.session_state.results["fps"] = {
                     "path": str(out), "fps": exported.fps, "count": count,
                     "start": first, "stop": stop, "method": exported.method,
+                    "crf": int(export_crf),
                 }
                 method_label = {
                     "stream_copy": "再圧縮なし",
                     "seek_transcode": "高速シーク＋境界検証済み",
                     "transcode": "先頭からのFFmpeg再エンコード",
                 }.get(exported.method, exported.method)
+                crf_detail = "" if exported.method == "stream_copy" else f" / CRF {export_crf}"
                 st.success(f"完了（{method_label}）：元 {first:,}〜{stop-1:,} フレーム / "
-                           f"{count:,}フレーム / {target_fps:g} FPS / {count / target_fps:.4f}秒")
+                           f"{count:,}フレーム / {target_fps:g} FPS / {count / target_fps:.4f}秒"
+                           f"{crf_detail}")
             except Exception as exc:
                 progress.fail()
                 out.unlink(missing_ok=True)
@@ -448,8 +478,13 @@ with fps_tab:
                 "seek_transcode": "高速シーク＋境界検証済み",
                 "transcode": "先頭から再エンコード",
             }.get(result.get("method"), "再エンコード")
+            quality_detail = (
+                "画質は元のまま" if result.get("method") == "stream_copy"
+                else f"CRF {result.get('crf', 23)}"
+            )
             st.write(f"作成済み動画：**元 {result['start']:,}〜{result['stop'] - 1:,}フレーム / "
-                     f"{result['fps']:g} FPS**（{method_label}、{size_bytes / 1024**2:.1f} MiB）")
+                     f"{result['fps']:g} FPS**（{method_label}、"
+                     f"{quality_detail}、{size_bytes / 1024**2:.1f} MiB）")
             if size_bytes <= MAX_EMBED_BYTES:
                 st.video(str(output_path))
             else:

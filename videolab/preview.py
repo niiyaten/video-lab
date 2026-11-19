@@ -16,6 +16,8 @@ from typing import Callable
 
 import imageio_ffmpeg
 
+from .encoding import DEFAULT_CRF, validate_crf
+
 
 @dataclass(frozen=True)
 class PreviewInfo:
@@ -29,6 +31,7 @@ def make_browser_preview(
     destination: str | Path,
     *,
     max_frames: int = 0,
+    crf: int = DEFAULT_CRF,
     on_progress: Callable[[int, int], None] | None = None,
 ) -> PreviewInfo:
     """Transcode to H.264 MP4 retaining source timing as much as possible.
@@ -47,6 +50,7 @@ def make_browser_preview(
     Args:
         max_frames: 0 means all source frames; positive number converts the
             first N source frames. This intentionally shortens duration.
+        crf: H.264 quality (0-51, lower is higher quality and larger output).
     """
     from .video_io import read_info
 
@@ -55,6 +59,7 @@ def make_browser_preview(
         raise ValueError("元動画が見つかりません。")
     if not isinstance(max_frames, int) or max_frames < 0:
         raise ValueError("最大フレーム数は0以上の整数にしてください。")
+    crf = validate_crf(crf)
     if src.resolve() == dest.resolve():
         raise ValueError("元動画と出力動画のパスを分けてください。")
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -82,7 +87,7 @@ def make_browser_preview(
         "-i", str(src),
         "-map", "0:v:0", "-map", "0:a:0?", "-map_metadata", "0",
         "-vf", video_filters, *fps_args,
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", str(crf),
         "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k",
         "-movflags", "+faststart",
     ]
