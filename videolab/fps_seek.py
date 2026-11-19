@@ -235,6 +235,8 @@ def _export_using_index(
         "-c:v", "libx264", "-preset", preset, "-crf", "23",
         "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(destination),
     ]
+    if on_stage:
+        on_stage("高速シーク後のデコード中")
     log = _run_verified_seek(cmd, expected, on_progress, on_stage)
     if on_stage:
         on_stage("先頭・末尾フレームの時刻を照合中")
@@ -294,7 +296,7 @@ def export_fps_with_seek(
                 src, dst, target_fps, interval.start, interval.stop, preset,
                 index, on_progress, on_stage,
             )
-        except (FastSeekUnavailable, OSError, subprocess.SubprocessError) as exc:
+        except (FastSeekUnavailable, RuntimeError, ValueError, OSError, subprocess.SubprocessError) as exc:
             # Never deliver a file with an unverified range.
             dst.unlink(missing_ok=True)
             if on_stage:
