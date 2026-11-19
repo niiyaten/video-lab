@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import hashlib
+import shutil
 import tempfile
+import uuid
 from pathlib import Path
 
 import cv2
@@ -11,7 +13,7 @@ from streamlit_image_coordinates import streamlit_image_coordinates
 import streamlit.components.v1 as components
 
 from videolab.edge_ui import render_edge_counter_tab
-from videolab.fps import change_playback_fps
+from videolab.fps_fast import export_fps_optimized
 from videolab.segments import seconds_to_interval
 from videolab.optical_flow import FlowOptions, run_sparse_flow
 from videolab.player import MAX_EMBED_BYTES, build_player_html
@@ -279,6 +281,15 @@ with fps_tab:
             f"（元 {video.fps:g} FPS → 出力 {target_fps:g} FPS）"
         )
         st.caption("記録FPSと出力FPSは独立です。音声は出力しません。元動画自体は変更されません。")
+        preset_label = st.selectbox(
+            "再圧縮が必要な場合のエンコード速度",
+            ["高速（ultrafast・ファイル容量大）", "標準（veryfast）", "容量優先（medium・時間長）"],
+            index=1, key="fps_export_preset",
+        )
+        preset = {"高速（ultrafast・ファイル容量大）": "ultrafast",
+                  "標準（veryfast）": "veryfast",
+                  "容量優先（medium・時間長）": "medium"}[preset_label]
+        st.caption("H.264で動画全体を変更する場合は、再圧縮なしを自動試行します。部分切り出しや非対応コーデックはFFmpegで再エンコードします。")
         st.markdown("#### 出力範囲を指定")
         mode = st.radio(
             "指定単位", ["フレーム番号", "動画の秒数"], horizontal=True,
@@ -360,39 +371,78 @@ with fps_tab:
                 st.warning(f"フレーム画像の表示に失敗しました: {exc}")
         st.caption("画像確認は任意です。後半フレームの読み出しには時間がかかる場合があります。")
         if st.button("選択区間のFPSを変更してMP4を作成", type="primary", key="fps_button"):
-            out = workdir / "playback_changed.mp4"
+            # Use a unique filename: reruns/exports must not overwrite prior results.
+            out = workdir / f"segment_{first}-{stop-1}_{uuid.uuid4().hex[:8]}.mp4"
             progress = JobProgress("指定区間をMP4として保存")
             try:
-                count = change_playback_fps(
+                exported = export_fps_optimized(
                     source_path, out, float(target_fps),
+                    on_progress=progress.update,
                     start_frame=int(first), end_frame=int(stop),
-                    on_scan_progress=progress.update,
+                    preset=preset,
                 )
+                count = exported.frame_count
                 progress.finish(f"{count:,} フレーム出力")
                 st.session_state.results["fps"] = {
-                    "path": str(out), "fps": target_fps, "count": count,
-                    "start": first, "stop": stop,
+                    "path": str(out), "fps": exported.fps, "count": count,
+                    "start": first, "stop": stop, "method": exported.method,
                 }
-                st.success(f"完了：元 {first:,}〜{stop-1:,} フレーム / "
+                method_label = "再圧縮なし" if exported.method == "stream_copy" else "FFmpeg再エンコード"
+                st.success(f"完了（{method_label}）：元 {first:,}〜{stop-1:,} フレーム / "
                            f"{count:,}フレーム / {target_fps:g} FPS / {count / target_fps:.4f}秒")
             except Exception as exc:
                 progress.fail()
-                st.session_state.results.pop("fps", None)
+                out.unlink(missing_ok=True)
                 st.error(f"処理失敗: {exc}")
         result = st.session_state.results.get("fps")
         if result and Path(result["path"]).is_file():
-            st.write(f"作成済み動画：**元 {result['start']:,}〜{result['stop'] - 1:,}フレーム / "
-                     f"{result['fps']:g} FPS**")
             output_path = Path(result["path"])
-            if output_path.stat().st_size <= MAX_EMBED_BYTES:
+            size_bytes = output_path.stat().st_size
+            method_label = "再圧縮なし" if result.get("method") == "stream_copy" else "再エンコード"
+            st.write(f"作成済み動画：**元 {result['start']:,}〜{result['stop'] - 1:,}フレーム / "
+                     f"{result['fps']:g} FPS**（{method_label}、{size_bytes / 1024**2:.1f} MiB）")
+            if size_bytes <= MAX_EMBED_BYTES:
                 st.video(str(output_path))
             else:
-                st.info("出力ファイルが大容量のため、画面への自動埋め込み再生は省略しました。MP4を保存して確認してください。")
-            st.download_button(
-                "選択区間のMP4を保存", data=output_path.read_bytes(),
-                file_name=f"segment_{result['start']}-{result['stop']-1}_{result['fps']:g}fps.mp4",
-                mime="video/mp4",
+                st.info("大容量のためプレビューは省略しました。下の保存先を指定してPCに保存できます。")
+            save_name = f"segment_{result['start']}-{result['stop']-1}_{result['fps']:g}fps.mp4"
+            default_save_path = Path.home() / "Downloads" / save_name
+            save_path_text = st.text_input(
+                "保存先（Streamlitを起動しているPC上の絶対パス）",
+                value=str(default_save_path), key=f"fps_save_path_{output_path.name}",
+                help="大容量動画でもブラウザへ全データを転送せず、ローカルの指定先へコピーします。",
             )
+            if st.button("指定したPCのパスに保存", key=f"fps_save_to_disk_{output_path.name}"):
+                save_path = Path(save_path_text.strip().strip('"')).expanduser()
+                if not save_path.is_absolute():
+                    st.error("保存先には絶対パスを指定してください。")
+                elif save_path.suffix.lower() != ".mp4":
+                    st.error("保存先ファイル名は .mp4 にしてください。")
+                elif not save_path.parent.is_dir():
+                    st.error("保存先フォルダが見つかりません。先にフォルダを作成してください。")
+                elif save_path.exists():
+                    st.error("同名ファイルがあります。上書きせず、別のファイル名を指定してください。")
+                else:
+                    try:
+                        shutil.copy2(output_path, save_path)
+                        if save_path.stat().st_size != size_bytes:
+                            save_path.unlink(missing_ok=True)
+                            raise OSError("コピー後のファイルサイズが一致しません。")
+                        st.success(f"保存しました: {save_path}")
+                    except OSError as exc:
+                        st.error(f"PCへの保存に失敗しました: {exc}")
+            if size_bytes <= 128 * 1024 * 1024:
+                st.download_button(
+                    "ブラウザからMP4をダウンロード（小容量向け）",
+                    data=output_path.read_bytes(), file_name=save_name,
+                    mime="video/mp4", key=f"fps_download_{output_path.name}",
+                )
+            else:
+                st.caption(
+                    "128 MiBを超えるためブラウザDLボタンは表示しません。"
+                    "『指定したPCのパスに保存』をご使用ください。"
+                    " ブラウザ経由のダウンロードはStreamlit内で大容量データを保持するためです。"
+                )
     st.caption("計測用の元動画FPS・各フレームの位置は変更しません。大きな開始フレーム番号では、正確に読み取るため先頭からのデコードに時間がかかります。")
 
 with flow_tab:
