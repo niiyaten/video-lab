@@ -15,6 +15,7 @@ import streamlit.components.v1 as components
 
 from videolab.edge_ui import render_edge_counter_tab
 from videolab.fps_seek import export_fps_with_seek
+from videolab.playback_speed import fps_to_multiplier, multiplier_to_fps, MIN_OUTPUT_FPS
 from videolab.segments import seconds_to_interval
 from videolab.optical_flow import FlowOptions, run_sparse_flow
 from videolab.player import MAX_EMBED_BYTES, build_player_html
@@ -246,6 +247,22 @@ def _fps_sec_to_changed() -> None:
     _fps_apply_seconds(start_s, stop_s)
 
 
+def _fps_target_changed() -> None:
+    """Synchronize multiplier after the user edits output FPS."""
+    st.session_state["fps_export_multiplier"] = fps_to_multiplier(
+        float(st.session_state["fps_export_target"]),
+        float(st.session_state["fps_export_source_fps"]),
+    )
+
+
+def _fps_multiplier_changed() -> None:
+    """Synchronize output FPS after the user edits playback speed."""
+    st.session_state["fps_export_target"] = multiplier_to_fps(
+        float(st.session_state["fps_export_multiplier"]),
+        float(st.session_state["fps_export_source_fps"]),
+    )
+
+
 def _init_fps_export_selection(signature: object, total: int, source_fps: float) -> None:
     movie_token = (repr(signature), total, source_fps)
     if st.session_state.get("fps_export_movie") != movie_token:
@@ -254,6 +271,7 @@ def _init_fps_export_selection(signature: object, total: int, source_fps: float)
         st.session_state["fps_export_source_fps"] = source_fps
         st.session_state["fps_export_notice"] = ""
         st.session_state["fps_export_target"] = float(source_fps)
+        st.session_state["fps_export_multiplier"] = 1.0
         _set_export_selection(0, total)
 
 with fps_tab:
@@ -265,11 +283,24 @@ with fps_tab:
         st.warning("元動画のフレーム数を取得できませんでした。区間指定には固定FPSと正しいフレーム数が必要です。")
     else:
         _init_fps_export_selection(st.session_state.get("signature"), video.frame_count, video.fps)
-        target_fps = st.number_input(
-            "出力再生FPS（上限設定なし）", min_value=0.001,
-            step=1.0, format="%.6f", key="fps_export_target",
-            help="2000 FPSなどのアプリ独自上限はありません。極端なFPSはH.264/MP4のエンコーダー・再生ソフトで扱えない場合があります。",
-        )
+        fps_col, multiplier_col = st.columns(2)
+        with fps_col:
+            target_fps = st.number_input(
+                "出力再生FPS", min_value=MIN_OUTPUT_FPS,
+                step=1.0, format="%.9f", key="fps_export_target",
+                on_change=_fps_target_changed,
+                help="元動画と出力動画のFPS。変更すると隣の再生倍率も更新します。"
+                     "2000 FPSなどのアプリ独自上限はありません。",
+            )
+        with multiplier_col:
+            st.number_input(
+                "再生速度（元動画に対する倍率）",
+                min_value=MIN_OUTPUT_FPS / video.fps,
+                step=0.1, format="%.9f", key="fps_export_multiplier",
+                on_change=_fps_multiplier_changed,
+                help="0.5で半分の速度、2で2倍速。変更すると出力FPSも自動更新します。"
+                     "指定したフレームの間引き・補間は行いません。",
+            )
         speed_ratio = target_fps / video.fps
         if speed_ratio < 1:
             speed_summary = f"{speed_ratio:.6g} 倍速（再生時間は {1 / speed_ratio:.6g} 倍）"
