@@ -374,10 +374,14 @@ with fps_tab:
             # Use a unique filename: reruns/exports must not overwrite prior results.
             out = workdir / f"segment_{first}-{stop-1}_{uuid.uuid4().hex[:8]}.mp4"
             progress = JobProgress("指定区間をMP4として保存")
+            progress.update(0, selected, stage="動画情報を取得・変換を準備中")
             try:
                 exported = export_fps_optimized(
                     source_path, out, float(target_fps),
                     on_progress=progress.update,
+                    on_stage=lambda stage: progress.update(
+                        progress.processed, selected, stage=stage
+                    ),
                     start_frame=int(first), end_frame=int(stop),
                     preset=preset,
                 )
