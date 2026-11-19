@@ -430,6 +430,8 @@ with fps_tab:
                             raise OSError("コピー後のファイルサイズが一致しません。")
                         st.success(f"保存しました: {save_path}")
                     except OSError as exc:
+                        # Remove a partially copied file if the disk fills up.
+                        save_path.unlink(missing_ok=True)
                         st.error(f"PCへの保存に失敗しました: {exc}")
             if size_bytes <= 128 * 1024 * 1024:
                 st.download_button(
