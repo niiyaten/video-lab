@@ -443,18 +443,21 @@ with fps_tab:
                 else:
                     save_progress = JobProgress("ファイル保存", unit="MiB")
                     total_mib = max(1, math.ceil(size_bytes / (1024 * 1024)))
+                    created_output = False
                     try:
                         copied = 0
-                        # Exclusive-create prevents accidental overwrite, even
-                        # when another process creates the file after the check.
-                        with output_path.open("rb") as src, save_path.open("xb") as dst:
-                            while chunk := src.read(4 * 1024 * 1024):
-                                dst.write(chunk)
-                                copied += len(chunk)
-                                save_progress.update(
-                                    math.ceil(copied / (1024 * 1024)), total_mib,
-                                    stage="指定フォルダへファイル保存中",
-                                )
+                        # Exclusive creation blocks overwrites even if another
+                        # process creates the same name after the UI check.
+                        with output_path.open("rb") as src:
+                            with save_path.open("xb") as dst:
+                                created_output = True
+                                while chunk := src.read(4 * 1024 * 1024):
+                                    dst.write(chunk)
+                                    copied += len(chunk)
+                                    save_progress.update(
+                                        math.ceil(copied / (1024 * 1024)), total_mib,
+                                        stage="指定フォルダへファイル保存中",
+                                    )
                         shutil.copystat(output_path, save_path)
                         if save_path.stat().st_size != size_bytes:
                             raise OSError("コピー後のファイルサイズが一致しません。")
@@ -462,8 +465,8 @@ with fps_tab:
                         st.success(f"保存しました: {save_path}")
                     except OSError as exc:
                         save_progress.fail()
-                        # Remove a partially copied file if the disk fills up.
-                        save_path.unlink(missing_ok=True)
+                        if created_output:
+                            save_path.unlink(missing_ok=True)
                         st.error(f"PCへの保存に失敗しました: {exc}")
             if size_bytes <= 128 * 1024 * 1024:
                 st.download_button(
