@@ -10,8 +10,10 @@ from dataclasses import dataclass
 from fractions import Fraction
 import math
 from pathlib import Path
+import queue
 import subprocess
 import tempfile
+import threading
 from typing import Callable
 
 import cv2
@@ -44,16 +46,51 @@ def _h264_source(path: Path) -> bool:
         cap.release()
 
 
-def _run_ffmpeg(command: list[str], expected: int,
-                on_progress: Progress | None) -> None:
+def _run_ffmpeg(
+    command: list[str],
+    expected: int,
+    on_progress: Progress | None,
+    *,
+    on_stage: Callable[[str], None] | None = None,
+    waiting_stage: str = "変換処理中",
+) -> None:
+    """Read FFmpeg progress on a worker thread, render status on caller thread.
+
+    A frame-based trim may spend minutes decoding earlier input frames before
+    encoding the first selected frame. In that phase FFmpeg reports frame=0;
+    a heartbeat keeps the stage/elapsed-time visible without inventing a
+    percentage. Streamlit calls stay on the main thread.
+    """
     done = 0
     with tempfile.TemporaryFile(mode='w+t', encoding='utf-8') as errors:
         with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=errors,
                               encoding='utf-8', errors='replace', text=True) as process:
             assert process.stdout is not None
-            for line in process.stdout:
+            messages: queue.Queue[str | None] = queue.Queue()
+
+            def consume_stdout() -> None:
+                try:
+                    for line in process.stdout:
+                        messages.put(line)
+                finally:
+                    messages.put(None)
+
+            reader = threading.Thread(target=consume_stdout, daemon=True)
+            reader.start()
+            while True:
+                try:
+                    line = messages.get(timeout=0.5)
+                except queue.Empty:
+                    # No output frame yet: show the scan stage and elapsed time.
+                    if done == 0 and on_stage:
+                        on_stage(waiting_stage)
+                    continue
+                if line is None:
+                    break
                 key, sep, value = line.strip().partition('=')
-                if sep and key == 'frame':
+                if not sep:
+                    continue
+                if key == 'frame':
                     try:
                         n = int(value)
                     except ValueError:
@@ -62,7 +99,10 @@ def _run_ffmpeg(command: list[str], expected: int,
                         done = n
                         if on_progress:
                             on_progress(min(done, expected), expected)
+                elif key == 'progress' and done == 0 and on_stage:
+                    on_stage(waiting_stage)
             returncode = process.wait()
+            reader.join(timeout=1)
         if returncode != 0:
             errors.seek(0)
             raise RuntimeError('FFmpeg変換失敗: ' + errors.read()[-1200:])
@@ -88,6 +128,7 @@ def export_fps_optimized(
     start_frame: int = 0,
     end_frame: int | None = None,
     preset: str = 'veryfast',
+    on_stage: Callable[[str], None] | None = None,
 ) -> FPSExportResult:
     """Write exactly [start_frame,end_frame) with new CFR playback timestamps.
 
@@ -127,7 +168,12 @@ def export_fps_optimized(
                    '-bsf:v', f'setts=pts=PTS*{fraction}:dts=DTS*{fraction}:duration=DURATION*{fraction}',
                    '-movflags', '+faststart', str(dst)]
         try:
-            _run_ffmpeg(command, expected, on_progress)
+            if on_stage:
+                on_stage('再圧縮せずにMP4へ書き込み中')
+            _run_ffmpeg(
+                command, expected, on_progress, on_stage=on_stage,
+                waiting_stage='再圧縮せずにMP4へ書き込み中',
+            )
             _verify(dst, expected, target_fps)
             return FPSExportResult(expected, target_fps, 'stream_copy')
         except (RuntimeError, ValueError):
@@ -143,7 +189,21 @@ def export_fps_optimized(
                '-c:v', 'libx264', '-preset', preset, '-crf', '23',
                '-pix_fmt', 'yuv420p', '-movflags', '+faststart', str(dst)]
     try:
-        _run_ffmpeg(command, expected, on_progress)
+        if interval.start:
+            waiting_stage = (
+                f'開始フレーム {interval.start:,} まで読み込み中'
+                '（この間の出力進捗は0%です）'
+            )
+        else:
+            waiting_stage = 'FFmpegでデコード・エンコードを準備中'
+        if on_stage:
+            on_stage(waiting_stage)
+        _run_ffmpeg(
+            command, expected, on_progress, on_stage=on_stage,
+            waiting_stage=waiting_stage,
+        )
+        if on_stage:
+            on_stage('出力ファイルのフレーム数・FPSを検証中')
         _verify(dst, expected, target_fps)
         return FPSExportResult(expected, target_fps, 'transcode')
     except Exception:

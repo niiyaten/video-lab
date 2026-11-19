@@ -80,3 +80,20 @@ def test_input_file_is_never_overwritten(samples):
     source, _ = samples
     with pytest.raises(ValueError):
         export_fps_optimized(source, source, 30)
+
+
+def test_partial_range_reports_reading_stage_before_first_output(samples, tmp_path):
+    source, _ = samples
+    stages = []
+    progress = []
+    output = tmp_path / 'stage-progress.mp4'
+    report = export_fps_optimized(
+        source, output, 30,
+        on_progress=lambda count, total: progress.append((count, total)),
+        on_stage=stages.append,
+        start_frame=120, end_frame=150,
+    )
+    assert report.frame_count == 30
+    assert any("開始フレーム 120" in text for text in stages)
+    assert any("検証中" in text for text in stages)
+    assert progress[-1] == (30, 30)
